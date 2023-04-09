@@ -1,0 +1,269 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+## Loading required packages
+
+```{r}
+require(tidyverse)
+require(readxl)
+require(ggalluvial)
+require(tmap)
+require(sf)
+require(terra)
+require(tidyterra)
+
+
+```
+
+## Data requirements
+
+- Rain data
+- Agriculture production
+- River flow
+- Population data
+- Marketing
+- Laws and regulations
+- Biodiversity
+- 
+
+
+## loading data
+We load the data and equate them as **data.agr**
+
+```{r}
+ data.agr = read_csv("agriculture_clean.csv") %>% 
+  mutate(crop = str_to_title(crop),
+         region = if_else(region == "Coast", "Pwani", region))
+```
+
+But some there are some missing data in the region column
+
+```{r}
+data.agr %>% 
+  filter(is.na(region)) 
+```
+
+we need to omit the region with NA
+
+```{r}
+data.clean = data.agr %>% 
+  drop_na(region)
+
+data.clean %>% distinct(variable)
+```
+
+```{r}
+#| message: false
+#| warning: false
+data.clean %>% 
+  pivot_wider(values_from = data, names_from = variable) %>% 
+  ggplot(aes(x = area, y = production))+
+  geom_point()+
+  geom_smooth()+
+  scale_x_continuous(trans = scales::log10_trans(), labels = scales::label_number(big.mark = ","))+
+  scale_y_continuous(trans = scales::log10_trans(), labels = scales::label_number(big.mark = ",")) +
+  ggpmisc::stat_correlation()+
+  facet_wrap(~crop)
+```
+
+
+```{r}
+
+xx = data.clean %>% 
+  filter(variable == "production") %>% 
+  group_by(region, crop) %>% 
+  summarise(
+    n = n(),.groups = "drop",
+    bar = sum(data, na.rm = T), 
+  ) %>% 
+  arrange(-bar) 
+  
+  
+```
+
+
+
+
+## Zones
+
+```{r}
+#| label: fig-alluvial
+#| fig-cap: The alluvial plot showing aquatic field specialization for students in their research between the year 2020 and 2023.
+#| echo: true
+#| warning: false
+#| message: false
+#| comment: ""
+
+agr.zones = xx%>% 
+  mutate(zones = case_when(region %in%  c("Mbeya", "Iringa","Rukwa" ,"Katavi" ,"Songwe", "Njombe", "Rukwa/Katavi") ~ "Southern Hi",
+                          region %in% c("Shinyanga", "Simiyu", "Kigoma", "Tabora") ~ "Western",
+                          region %in% c("Dodoma", "Singida") ~ "Central",
+                          region %in% c("Dar es Salaam", "Morogoro", "Pwani") ~ "Eastern",
+                          region %in% c("Arusha", "Kilimanjaro", "Tanga", "Manyara") ~ "Northern",
+                          region %in% c("Lindi", "Mtwara", "Ruvuma") ~ "Southern",
+                          region %in% c("Mwanza", "Mara", "Kagera", "Geita") ~ "Lake")) %>% 
+  drop_na(zones)
+  # slice(1:40) 
+
+# agr.zones %>% write_csv("agricultureZones.csv")
+```
+
+### Production by zones
+
+```{r}
+agr.zones %>% 
+  ggplot(aes(axis1 = zones, axis2 = crop, y = bar)) +
+  geom_alluvium(aes(fill = crop), curve_type = "sigmoid", alpha = 0.6, width = 1/5)+
+  geom_stratum(aes(fill = crop), width = 1/5)+
+  geom_label(stat = "stratum", aes(label = after_stat(stratum)), size = 3, alpha = 0.6)+
+  theme_void()+
+  theme(legend.position = "none")+
+  ggsci::scale_fill_futurama()+
+  scale_fill_brewer(palette = "Dark2")
+  # scale_x_discrete(expand = c(0.1,0.05))
+  
+```
+### Production by region at a zone
+
+```{r}
+agr.zones %>% 
+  filter(zones == "Western") %>% 
+  ggplot(aes(axis1 = region,   axis2 = crop, y = bar)) +
+  geom_alluvium(aes(fill = crop), curve_type = "sigmoid", alpha = 0.6, width = 1/5)+
+  geom_stratum(aes(fill = crop), width = 1/5)+
+  geom_label(stat = "stratum", aes(label = after_stat(stratum)), size = 3, alpha = 0.6)+
+  theme_void()+
+  theme(legend.position = "none")+
+  ggsci::scale_fill_futurama()+
+  scale_fill_brewer(palette = "Dark2")
+  # scale_x_discrete(expand = c(0.1,0.05))
+```
+
+## Time series
+
+
+```{r}
+#| warning: false
+#| message: false
+
+begin = 2005
+end = 2020
+
+selected.tb = data.clean %>% 
+  filter(variable == "yield" & crop == "Rice" & region %in% c("Lindi"),
+         year >= begin & year < end) 
+
+selected.stats = selected.tb %>%
+  group_by(year) %>%
+  summarise(
+    n = n(),
+    bar = mean(data, na.rm = T), 
+    error = sd(data, na.rm = T),
+    error = error/sqrt(n),
+    .groups = "drop") 
+
+myts = selected.stats %>%
+  pull(bar) %>% 
+  ts(start = begin, frequency = 1)%>% 
+  imputeTS::na_kalman()
+
+myts %>% 
+  forecast::autoplot()+
+  scale_x_continuous(breaks = seq(begin,end,2))
+
+
+aa = myts  %>% 
+  # window(start = 2000, end = 2019) %>% 
+  trend::sens.slope()
+
+
+```
+
+## Maps
+
+```{r}
+region = st_read("agricultureApp/data/regions.gpkg") %>% 
+  select(region = 4) %>% 
+  st_make_valid()
+
+africa = spData::world %>% 
+  filter(continent == "Africa") %>% 
+  st_as_sf()
+
+region %>% arrange(region) %>% pull(region)
+```
+
+```{r}
+
+agr.data = read_csv("agriculture_clean.csv")%>% 
+  mutate(crop = str_to_title(crop))%>% 
+  mutate(crop = str_to_title(crop),
+         region = if_else(region == "Coast", "Pwani", region),
+         region = if_else(region == "Rukwa/Katavi", "Katavi", region),
+         region = if_else(region == "Dar es Salaam", "Dar-es-salaam", region)) %>% 
+  mutate(zones = case_when(region %in%  c("Mbeya", "Iringa","Rukwa" ,"Katavi" ,"Songwe", "Njombe") ~ "Southern Hi",
+                           region %in% c("Shinyanga", "Simiyu", "Kigoma", "Tabora") ~ "Western",
+                           region %in% c("Dodoma", "Singida") ~ "Central",
+                           region %in% c("Dar-es-salaam", "Morogoro", "Pwani") ~ "Eastern",
+                           region %in% c("Arusha", "Kilimanjaro", "Tanga", "Manyara") ~ "Northern",
+                           region %in% c("Lindi", "Mtwara", "Ruvuma") ~ "Southern",
+                           region %in% c("Mwanza", "Mara", "Kagera", "Geita") ~ "Lake")) %>% 
+  drop_na(zones)
+  
+agr.data %>% arrange(region)%>% distinct(region) %>% pull()
+
+
+```
+
+```{r}
+
+tmap_mode(mode = "plot")
+
+tm_shape(shp = region) +
+  tm_borders(col = NA) +
+  tm_shape(shp = africa)+
+  tm_fill()+
+  tm_borders()+
+  tm_text(text = "name_long",size = 0.5)+
+  tm_shape(shp = region) +
+  tm_fill(col = "lightblue") +
+  tm_borders(col = "black") +
+  tm_text(text = "region",size = 0.5)+
+  tm_compass(position = c(0.85,0.85)) +
+  tm_scale_bar(position = c(0.02,0.02))+
+  tm_graticules(n.x = 5, n.y = 6)
+```
+
+
+```{r}
+region.agr = region %>% 
+  left_join(agr.data %>% filter(variable =="yield" ), by = "region") %>% 
+  select(-variable)
+
+```
+
+
+```{r}
+tmap_mode(mode = "view")
+aaa = region.agr %>% 
+  filter(year == 2005 & crop == "Maize")
+
+tm_shape(shp = aaa) +
+  tm_fill(col = "data", n = 3, style = "quantile") +
+  tm_borders(col = "ivory") +
+  tm_text(text = "region",size = 0.5)+
+  tm_compass(position = c(0.85,0.85)) +
+  tm_scale_bar(position = c(0.02,0.02))+
+  tm_graticules(n.x = 5, n.y = 6)+
+  tm_layout(legend.position = c(0.1,0.1),
+            legend.bg.color = "white",
+            legend.frame = TRUE, 
+            legend.frame.lwd = 0.2)
+```
+
+
+
+
